@@ -1,0 +1,30 @@
+# .github/workflows/main.yml
+name: Read Version Info
+
+on: [push]
+
+jobs:
+  read_version:
+    runs-on: ubuntu-latest # Or windows-latest, pwsh works cross-platform
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Read Version File and Append Run ID
+      shell: pwsh # Explicitly use PowerShell Core
+      run: |
+        # Assume version.txt exists in the repo root with "Version: 1.0"
+        $filePath = "./version.txt" # Relative path in workspace
+        Write-Host "Reading from: $filePath"
+
+        if (Test-Path $filePath) {
+          $content = Get-Content $filePath
+          # Use GitHub context for the run ID
+          $newContent = "$content - RunID: ${{ github.run_id }}" 
+          Write-Host "Updated Content: $newContent"
+        } else {
+          Write-Error "File not found: $filePath"
+        }
+
+

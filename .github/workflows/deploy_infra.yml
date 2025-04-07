@@ -1,0 +1,36 @@
+# .github/workflows/deploy_infra.yml
+name: Deploy Azure Infra
+
+on:
+  push:
+    branches: [ main ] # Triggers on push to main branch
+
+jobs:
+  Deploy:
+    runs-on: ubuntu-latest # Can run on Linux as Az modules work cross-platform
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4 # Use v4 which is current
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }} # Requires secret configured in GitHub
+          enable-AzPSSession: true   # Configures PS session for Az module
+
+      - name: Create Resource Group and Storage Account
+        uses: azure/powershell@v1
+        with:
+          inlineScript: |
+            # PowerShell script to provision Azure resources
+            $rgName = 'DemoResourceGroupFromAction' # Example name
+            $location = 'WestUS2' # Example location
+            $storageAccountName = "demostore$(Get-Random)" # Unique storage name
+
+            Write-Host "Creating Resource Group: $rgName in $location"
+            $rg = New-AzResourceGroup -Name $rgName -Location $location -Force # Use -Force to ignore if exists
+
+            Write-Host "Creating Storage Account: $storageAccountName in $rgName"
+            New-AzStorageAccount -ResourceGroupName $rgName -Name $storageAccountName -Location $location -SkuName Standard_LRS
+
+          azPSVersion: 'latest' # Use latest available Az PS module version
