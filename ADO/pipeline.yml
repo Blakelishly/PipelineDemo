@@ -1,0 +1,183 @@
+# azure-pipelines.yml
+trigger:
+- main
+
+variables:
+  # --- Project Settings ---
+  pythonVersion: '3.11' 
+  appName: 'PythonFlaskApp' 
+  appFolderPath: 'ADO/$(appName)'
+  workingDirectory: '$(System.DefaultWorkingDirectory)'
+  artifactPath: '$(Build.ArtifactStagingDirectory)'
+  
+  # --- Azure Infrastructure Settings ---
+  azureSubscription: 'BlakePersonalTenant'
+  resourceGroupName: 'rg-$(appName)-dev-ps-1' 
+  location: 'WestUS2'
+  appServicePlanName: 'asp-$(appName)-free-ps-1' 
+  webAppName: '$(appName)-ps-$(Build.BuildId)' # Uses BuildId for uniqueness
+  pythonRuntimeForPS: 'PYTHON|$(pythonVersion)' 
+
+stages:
+# --- Build Stage ---
+- stage: Build
+  displayName: Build and Test Python App
+  jobs:
+  - job: BuildJob
+    pool:
+      vmImage: 'ubuntu-latest' 
+    steps:
+      - task: UsePythonVersion@0
+        displayName: 'Set up Python $(pythonVersion)'
+        inputs:
+          versionSpec: '$(pythonVersion)'
+          addToPath: true
+      - script: |
+          python -m venv env 
+          source env/bin/activate # Linux activation
+          pip install --upgrade pip
+          pip install -r $(appFolderPath)/requirements.txt 
+        displayName: 'Install Dependencies'
+        workingDirectory: $(workingDirectory)
+      - task: PowerShell@2
+        displayName: 'Create Build Info File'
+        inputs:
+          targetType: 'inline'
+          script: |
+            $outputFile = "$(workingDirectory)/$(appFolderPath)/buildinfo.txt" 
+            Write-Host "Creating build info file: $outputFile"
+            $buildInfo = @"
+            Build ID: $(Build.BuildId)
+            Build Number: $(Build.BuildNumber)
+            Source Branch: $(Build.SourceBranchName)
+            Commit ID: $(Build.SourceVersion)
+            Agent OS: $(Agent.OS)
+            Python Version: $(pythonVersion)
+            Timestamp: $(Get-Date -Format u)
+            "@
+            $buildInfo | Out-File -FilePath $outputFile -Encoding UTF8
+            Write-Host "Build info file content:"
+            Get-Content $outputFile
+      - task: ArchiveFiles@2
+        displayName: 'Archive Application Files'
+        inputs:
+          rootFolderOrFile: '$(workingDirectory)/$(appFolderPath)' 
+          includeRootFolder: false 
+          archiveType: 'zip'
+          archiveFile: '$(artifactPath)/$(Build.BuildId).zip'
+          replaceExistingArchive: true
+      - task: PublishBuildArtifacts@1
+        displayName: 'Publish Artifact'
+        inputs:
+          PathtoPublish: '$(artifactPath)'
+          ArtifactName: 'drop'
+
+# --- Provision Infrastructure Stage ---
+- stage: ProvisionInfrastructure
+  displayName: Provision Azure Resources (PowerShell)
+  dependsOn: Build
+  condition: succeeded()
+  jobs:
+  - job: ProvisionJob
+    displayName: Create App Service Infrastructure via Az PowerShell
+    pool:
+      vmImage: 'ubuntu-latest' 
+    steps:
+    - task: AzurePowerShell@5
+      displayName: 'Azure PowerShell: Create/Update Resources'
+      inputs:
+        azureSubscription: $(azureSubscription)
+        ScriptType: 'InlineScript'
+        azurePowerShellVersion: 'LatestVersion' 
+        pwsh: true 
+        Inline: |
+          $ErrorActionPreference = 'Stop' 
+          
+          $rgName = $env:RESOURCEGROUPNAME 
+          $loc = $env:LOCATION
+          $planName = $env:APPSERVICEPLANNAME
+          $webappName = $env:WEBAPPNAME
+          $pythonRuntime = $env:PYTHONRUNTIMEFORPS
+          
+          # Add checks for null/empty variables
+          if ([string]::IsNullOrWhiteSpace($rgName) -or `
+              [string]::IsNullOrWhiteSpace($loc) -or `
+              [string]::IsNullOrWhiteSpace($planName) -or `
+              [string]::IsNullOrWhiteSpace($webappName) -or `
+              [string]::IsNullOrWhiteSpace($pythonRuntime)) {
+              Write-Error "One or more required environment variables (RESOURCEGROUPNAME, LOCATION, APPSERVICEPLANNAME, WEBAPPNAME, PYTHONRUNTIMEFORPS) are not set."
+              exit 1
+          }
+
+          Write-Host "Checking/Creating Resource Group: $rgName in $loc"
+          $rg = New-AzResourceGroup -Name $rgName -Location $loc -Force -ErrorAction SilentlyContinue 
+          if (!$rg) { 
+             Write-Error "Resource Group '$rgName' could not be confirmed."
+             exit 1
+          } else {
+             Write-Host "Resource Group '$rgName' ensured."
+          }
+
+          Write-Host "Checking/Creating App Service Plan: $planName (Free Tier F1 Linux)"
+          $plan = Get-AzAppServicePlan -Name $planName -ResourceGroupName $rgName -ErrorAction SilentlyContinue
+          if ($null -eq $plan) {
+              Write-Host "Plan does not exist. Creating..."
+              $plan = New-AzAppServicePlan -Name $planName -ResourceGroupName $rgName -Location $loc -Tier "Basic" -NumberOfWorkers 1 -WorkerSize "Small" -Linux
+              Write-Host "App Service Plan '$planName' created."
+          } else {
+              Write-Host "App Service Plan '$planName' already exists."
+          }
+
+          Write-Host "Checking/Creating Linux Web App: $webappName for Python"
+          $webapp = Get-AzWebApp -Name $webappName -ResourceGroupName $rgName -ErrorAction SilentlyContinue
+          if ($null -eq $webapp) {
+              Write-Host "Web App does not exist. Creating..."
+              $webapp = New-AzWebApp -Name $webappName -ResourceGroupName $rgName -Location $loc -AppServicePlan $planName
+              
+              Write-Host "Configuring Python runtime ($pythonRuntime)..."
+              $webAppSettings = @{
+                  "linuxFxVersion" = "$pythonRuntime" 
+              }
+              Set-AzWebApp -ResourceGroupName $rgName -Name $webappName -AppSettings $webAppSettings
+              
+              Write-Host "Web App '$webappName' created and configured."
+          } else {
+              Write-Host "Web App '$webappName' already exists."
+          }
+          
+          Write-Host "Infrastructure provisioning step complete."
+        failOnStderr: true 
+
+# --- Deploy Stage ---
+- stage: Deploy
+  displayName: Deploy Python App to Azure
+  dependsOn: 
+  - Build 
+  - ProvisionInfrastructure 
+  condition: succeeded() 
+  jobs:
+  - deployment: DeployJob
+    environment: 'production' 
+    pool:
+      vmImage: 'ubuntu-latest' 
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: UsePythonVersion@0 
+            inputs:
+              versionSpec: '$(pythonVersion)'
+              addToPath: true
+              
+          - download: current
+            artifact: drop
+
+          - task: AzureWebApp@1
+            displayName: 'Deploy Flask App to Azure Web App'
+            inputs:
+              azureSubscription: $(azureSubscription) 
+              appType: 'webAppLinux' 
+              appName: $(webAppName) 
+              package: '$(Pipeline.Workspace)/drop/$(Build.BuildId).zip' 
+              runtimeStack: $(pythonRuntimeForPS) 
+              startupCommand: 'gunicorn --bind=0.0.0.0:8000 app:app'

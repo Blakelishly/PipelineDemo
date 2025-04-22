@@ -1,0 +1,27 @@
+pipeline {
+    agent { label 'windows' } // Assumes a Windows agent node tagged 'windows'
+
+    stages {
+        stage('Read Version Info') {
+            steps {
+                script {
+                    // Use the 'powershell' step for Windows agents
+                    powershell '''
+                        # Assume version.txt exists in the workspace root with "Version: 1.0"
+                        $filePath = "./version.txt" 
+                        Write-Host "Reading from: $filePath"
+
+                        if (Test-Path $filePath) {
+                            $content = Get-Content $filePath
+                            # Use Jenkins built-in environment variable
+                            $newContent = "$content - BuildID: $Env:BUILD_ID" 
+                            Write-Host "Updated Content: $newContent"
+                        } else {
+                            Write-Error "File not found: $filePath"
+                        }
+                    '''
+                }
+            }
+        }
+    }
+}

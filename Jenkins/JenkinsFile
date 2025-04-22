@@ -1,0 +1,50 @@
+// Jenkinsfile
+pipeline {
+    agent { label 'windows-dsc-target' } // Agent needs PowerShell & be on/able to reach target node
+
+    stages {
+        stage('Apply DSC Configuration') {
+            steps {
+                powershell '''
+                    # Define DSC Configuration inline
+                    Configuration WebServerConfig {
+                        Node "localhost" { # Target the node where the agent runs this script
+                            WindowsFeature IIS {
+                                Name   = "Web-Server" # Ensure IIS Web Server role
+                                Ensure = "Present"     # State should be 'Present'
+                            }
+                            # Add other configurations here (e.g., registry keys, services)
+                        }
+                    }
+
+                    # Compile the configuration MOF file
+                    Write-Verbose "Compiling DSC MOF..."
+                    WebServerConfig -OutputPath "C:\\DSC_Temp" # Temporary path on agent
+
+                    # Apply the configuration
+                    Write-Verbose "Applying DSC Configuration..."
+                    Start-DscConfiguration -Path "C:\\DSC_Temp" -Wait -Verbose -Force
+
+                    # Optional: Clean up MOF file
+                    # Remove-Item -Path "C:\\DSC_Temp" -Recurse -Force
+                '''
+            }
+        }
+        // Optional: Add a 'Verify' stage using Test-DscConfiguration
+        /*
+        stage('Verify DSC Configuration') {
+            steps {
+                powershell '''
+                    $result = Test-DscConfiguration
+                    if ($result.InDesiredState -eq $false) {
+                        Write-Error "DSC Configuration drift detected!"
+                        exit 1
+                    } else {
+                        Write-Host "DSC Configuration Verified."
+                    }
+                '''
+            }
+        }
+        */
+    }
+}

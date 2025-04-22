@@ -1,0 +1,26 @@
+# azure-pipelines.yml
+trigger:
+- main
+
+pool:
+  vmImage: 'windows-latest' # Or ubuntu-latest, pwsh works cross-platform
+
+steps:
+- task: PowerShell@2
+  inputs:
+    targetType: 'inline'
+    script: |
+      # Assume version.txt exists in the repo root with "Version: 1.0"
+      $filePath = "$(System.DefaultWorkingDirectory)/version.txt"
+      Write-Host "Reading from: $filePath"
+
+      if (Test-Path $filePath) {
+        $content = Get-Content $filePath
+        $newContent = "$content - Build: $(Build.BuildId)"
+        Write-Host "Updated Content: $newContent"
+        # In a real scenario, you might write this back or use it
+      } else {
+        Write-Error "File not found: $filePath"
+      }
+    displayName: 'Read Version File and Append Build ID'
+
